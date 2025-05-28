@@ -63,7 +63,7 @@ def setup_retrieval_system(llm, vectorstore):
                 llm=llm,
                 chain_type="stuff",
                 retriever=retriever,
-                chain_type_kwargs={"prompt": prompt},
+                chain_type_kwargs={"prompt": prompt},  # You already specify the correct prompt
                 return_source_documents=True
             )
 
