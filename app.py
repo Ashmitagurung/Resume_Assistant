@@ -225,7 +225,7 @@ if st.session_state.initialized:
         )
 else:
     # Display initialization status
-    st.warning("Please upload PDF resumes and process them to begin.")
+    st.warning("Please upload PDF resumes.")
 
     # Show some information about the system
     st.markdown("""
