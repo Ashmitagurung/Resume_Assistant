@@ -1,76 +1,107 @@
-# QA Chain setup
-# Responsible for initializing the language model and setting up the retrieval QA chain
+# src/retrieval/qa_chain.py
 
-import streamlit as st
+import os
 from langchain_groq import ChatGroq
 from langchain.chains import RetrievalQA
-from langchain_core.prompts import PromptTemplate
+from langchain.prompts import PromptTemplate
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain.chains.retrieval import create_retrieval_chain
+import streamlit as st
+
 
 def initialize_llm():
-    """Initialize the language model using API key from secrets"""
+    """Initialize the Groq LLM."""
     try:
         # Get API key from Streamlit secrets
         api_key = st.secrets["groq"]["api_key"]
 
-        with st.spinner("Initializing language model..."):
-            llm = ChatGroq(
-                model_name="Llama-3.3-70b-Versatile",
-                temperature=0.2,  # Lower temperature for more factual responses
-                max_tokens=1000,  # Increased token limit for more detailed responses
-                api_key=api_key,
-            )
+        # Initialize ChatGroq
+        llm = ChatGroq(
+            groq_api_key=api_key,
+            model_name="llama3-70b-8192",  # or "mixtral-8x7b-32768"
+            temperature=0.1,
+            max_tokens=1024
+        )
 
-            # Test the LLM to ensure it works
-            test_response = llm.invoke("Give a brief response to test if you're working properly.")
-            st.success("LLM connection successful!")
-
-            return llm
-
+        return llm
     except Exception as e:
         st.error(f"Error initializing LLM: {str(e)}")
         return None
 
+
 def setup_retrieval_system(llm, vectorstore):
-    """Set up the RAG retrieval system"""
+    """Set up the retrieval QA system."""
     try:
-        with st.spinner("Setting up RAG retrieval system..."):
-            retriever = vectorstore.as_retriever(
-                search_type="similarity",
-                search_kwargs={"k": 8}  # Increased to 8 to get more context from multiple documents
-            )
+        # Create a custom prompt template
+        prompt_template = """Use the following pieces of context to answer the question at the end. 
+        If you don't know the answer, just say that you don't know, don't try to make up an answer.
 
-            # Create a custom QA prompt template for better instructions
-            qa_template = """You are a Resume Analysis Expert assistant.
+        Context: {context}
 
-            You need to answer questions about multiple resumes. Use ONLY the context provided below to answer. If you don't know the answer based on the context, say "I don't have that information in the provided resumes."
+        Question: {question}
 
-            When answering, always:
-            1. Specify which resume (by role and filename) you're referring to
-            2. Use direct quotes from the resumes when appropriate
-            3. Organize information clearly
+        Answer:"""
 
-            Context about the resumes:
-            {context}
+        PROMPT = PromptTemplate(
+            template=prompt_template,
+            input_variables=["context", "question"]
+        )
 
-            Question: {query}
+        # Create retriever
+        retriever = vectorstore.as_retriever(
+            search_type="similarity",
+            search_kwargs={"k": 5}
+        )
 
-            Answer:"""
+        # Method 1: Using RetrievalQA (Original approach - fixed)
+        qa_chain = RetrievalQA.from_chain_type(
+            llm=llm,
+            chain_type="stuff",
+            retriever=retriever,
+            chain_type_kwargs={"prompt": PROMPT},
+            return_source_documents=True,
+            verbose=True
+        )
 
-            # Use the prompt in the chain
-            prompt = PromptTemplate(template=qa_template, input_variables=["context", "query"])
-
-            qa_chain = RetrievalQA.from_chain_type(
-                llm=llm,
-                chain_type="stuff",
-                retriever=retriever,
-                chain_type_kwargs={"prompt": prompt},  # You already specify the correct prompt
-                return_source_documents=True
-            )
-
-            st.success("RAG pipeline created successfully!")
-
-            return qa_chain
+        return qa_chain
 
     except Exception as e:
         st.error(f"Error setting up retrieval system: {str(e)}")
+        return None
+
+
+def setup_modern_retrieval_system(llm, vectorstore):
+    """Alternative setup using newer LangChain patterns."""
+    try:
+        # Create a custom prompt template
+        prompt_template = """Use the following pieces of context to answer the question at the end. 
+        If you don't know the answer, just say that you don't know, don't try to make up an answer.
+
+        Context: {context}
+
+        Question: {input}
+
+        Answer:"""
+
+        PROMPT = PromptTemplate(
+            template=prompt_template,
+            input_variables=["context", "input"]
+        )
+
+        # Create retriever
+        retriever = vectorstore.as_retriever(
+            search_type="similarity",
+            search_kwargs={"k": 5}
+        )
+
+        # Create document chain
+        document_chain = create_stuff_documents_chain(llm, PROMPT)
+
+        # Create retrieval chain
+        retrieval_chain = create_retrieval_chain(retriever, document_chain)
+
+        return retrieval_chain
+
+    except Exception as e:
+        st.error(f"Error setting up modern retrieval system: {str(e)}")
         return None
