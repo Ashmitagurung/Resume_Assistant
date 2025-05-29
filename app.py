@@ -8,7 +8,7 @@ import tempfile
 from src.document_processor.loader import process_pdfs
 from src.embeddings.model import initialize_embeddings
 from src.retrieval.vectorstore import create_vector_store, get_all_roles
-from src.retrieval.qa_chain import initialize_llm, setup_retrieval_system
+from src.retrieval.qa_chain import initialize_llm, setup_retrieval_system, setup_modern_retrieval_system
 from src.utils.resume_info import get_resume_by_role, extract_resume_info
 from src.interface.tabs import render_query_tab, render_role_tab, render_modification_tab
 
@@ -40,14 +40,44 @@ if 'processed_files' not in st.session_state:
     st.session_state.processed_files = []
 if 'all_roles' not in st.session_state:
     st.session_state.all_roles = []
+if 'chain_type' not in st.session_state:
+    st.session_state.chain_type = "traditional"  # or "modern"
 
 
 # Function to query the RAG system
-def query_rag(qa_chain, question):
-    """Basic RAG query function."""
+def query_rag(qa_chain, question, chain_type="traditional"):
+    """Enhanced RAG query function with support for different chain types."""
     with st.spinner("Analyzing resumes..."):
-        result = qa_chain({"query": question})
-        return result
+        try:
+            if chain_type == "modern":
+                # For modern retrieval chain
+                result = qa_chain.invoke({"input": question})
+                return {
+                    "result": result.get("answer", "No answer found"),
+                    "source_documents": result.get("context", [])
+                }
+            else:
+                # For traditional RetrievalQA chain
+                result = qa_chain.invoke({"query": question})
+                return result
+
+        except Exception as e:
+            # Try alternative input key
+            try:
+                if chain_type == "traditional":
+                    # Try with 'question' key instead of 'query'
+                    result = qa_chain.invoke({"question": question})
+                    return result
+                else:
+                    # Try with 'query' key for modern chain
+                    result = qa_chain.invoke({"query": question})
+                    return {
+                        "result": result.get("answer", "No answer found"),
+                        "source_documents": result.get("context", [])
+                    }
+            except Exception as e2:
+                st.error(f"Error querying system: {str(e)} | {str(e2)}")
+                return {"result": "Error occurred during query", "source_documents": []}
 
 
 # Sidebar for configuration
@@ -66,6 +96,16 @@ api_key = "your_groq_api_key_here"
         # Display API status
         st.success("✅ Groq API key loaded from secrets")
 
+    # Chain type selection
+    st.markdown("### Chain Configuration")
+    chain_option = st.selectbox(
+        "Select QA Chain Type:",
+        ["Traditional RetrievalQA", "Modern Retrieval Chain"],
+        help="Choose between traditional or modern LangChain patterns"
+    )
+
+    st.session_state.chain_type = "modern" if "Modern" in chain_option else "traditional"
+
     # File uploader
     uploaded_files = st.file_uploader(
         "Upload Resume PDFs",
@@ -82,8 +122,9 @@ api_key = "your_groq_api_key_here"
     st.markdown("### Usage Tips")
     st.markdown("""
     1. Upload PDF resumes
-    2. Process the resumes
-    3. Ask questions or use the tools
+    2. Choose chain type
+    3. Process the resumes
+    4. Ask questions or use the tools
     """)
 
 # Process files when button is clicked
@@ -125,8 +166,12 @@ if process_button and uploaded_files:
                         if not llm:
                             st.error("Failed to initialize LLM. Please check your API key in the secrets.toml file.")
                         else:
-                            # Setup retrieval system
-                            qa_chain = setup_retrieval_system(llm, vectorstore)
+                            # Setup retrieval system based on selected type
+                            if st.session_state.chain_type == "modern":
+                                qa_chain = setup_modern_retrieval_system(llm, vectorstore)
+                            else:
+                                qa_chain = setup_retrieval_system(llm, vectorstore)
+
                             if not qa_chain:
                                 st.error("Failed to set up retrieval system. Please try again.")
                             else:
@@ -139,7 +184,7 @@ if process_button and uploaded_files:
                                 st.session_state.all_roles = all_roles
                                 st.session_state.initialized = True
 
-                                st.success("✅ System initialized successfully!")
+                                st.success(f"✅ System initialized successfully with {chain_option}!")
 
         except Exception as e:
             st.error(f"An error occurred during processing: {str(e)}")
@@ -151,7 +196,11 @@ if st.session_state.initialized:
 
     # Tab 1: Free-form querying
     with tab1:
-        render_query_tab(st.session_state.initialized, st.session_state.qa_chain, query_rag)
+        render_query_tab(
+            st.session_state.initialized,
+            st.session_state.qa_chain,
+            lambda qa_chain, question: query_rag(qa_chain, question, st.session_state.chain_type)
+        )
 
     # Tab 2: Role-based search
     with tab2:
@@ -161,7 +210,7 @@ if st.session_state.initialized:
             st.session_state.vectorstore,
             st.session_state.qa_chain,
             get_resume_by_role,
-            query_rag
+            lambda qa_chain, question: query_rag(qa_chain, question, st.session_state.chain_type)
         )
 
     # Tab 3: Resume modification suggestions
@@ -172,7 +221,7 @@ if st.session_state.initialized:
             st.session_state.qa_chain,
             st.session_state.vectorstore,
             get_resume_by_role,
-            query_rag
+            lambda qa_chain, question: query_rag(qa_chain, question, st.session_state.chain_type)
         )
 else:
     # Display initialization status
@@ -180,5 +229,5 @@ else:
 
     # Show some information about the system
     st.markdown("""
-
+ 
     """)
