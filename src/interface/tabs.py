@@ -2,6 +2,52 @@
 # Contains functions to render each of the Streamlit tabs
 
 import streamlit as st
+import re
+
+
+def extract_person_name_from_query(query):
+    """Extract person name from query if mentioned"""
+    # Common patterns for person names in queries
+    query_lower = query.lower()
+
+    # Look for patterns like "abin prajapati", "prasanna ghimire", etc.
+    # This is a simple approach - you might want to enhance this based on your specific name patterns
+    name_patterns = [
+        r'\b([A-Z][a-z]+\s+[A-Z][a-z]+)\b',  # First Last name pattern
+        r'\b([A-Z][a-z]+)\s+([A-Z][a-z]+)\b'  # Another pattern for names
+    ]
+
+    for pattern in name_patterns:
+        matches = re.findall(pattern, query)
+        if matches:
+            if isinstance(matches[0], tuple):
+                return ' '.join(matches[0])
+            else:
+                return matches[0]
+
+    return None
+
+
+def filter_sources_by_context(sources, query, person_name=None):
+    """Filter sources based on query context and person name"""
+    if not person_name:
+        person_name = extract_person_name_from_query(query)
+
+    if person_name:
+        # Filter sources to only include those from the mentioned person
+        filtered_sources = []
+        for doc in sources:
+            filename = doc.metadata.get('filename', '').lower()
+            # Check if person name is in filename
+            if any(name_part.lower() in filename for name_part in person_name.split()):
+                filtered_sources.append(doc)
+
+        # If we found relevant sources, return them; otherwise return original sources
+        if filtered_sources:
+            return filtered_sources
+
+    return sources
+
 
 def render_query_tab(initialized, qa_chain, query_rag):
     """Render the query tab content"""
@@ -21,11 +67,29 @@ def render_query_tab(initialized, qa_chain, query_rag):
         st.subheader("Answer:")
         st.write(result["result"])
 
+        # Extract person name from query for better source filtering
+        person_name = extract_person_name_from_query(query)
+
+        # Filter sources based on context
+        filtered_sources = filter_sources_by_context(result["source_documents"], query, person_name)
+
+        # Limit to 3 most relevant sources
+        relevant_sources = filtered_sources[:3]
+
         st.subheader("Sources:")
-        for i, doc in enumerate(result["source_documents"][:3]):  # Limit to 3 sources
-            with st.expander(
-                    f"Source {i + 1} from {doc.metadata.get('filename', 'unknown')} ({doc.metadata.get('role', 'Unknown Role')})"):
-                st.write(doc.page_content[:500] + "..." if len(doc.page_content) > 500 else doc.page_content)
+
+        if not relevant_sources:
+            st.info("No specific sources found for this query.")
+        else:
+            for i, doc in enumerate(relevant_sources):
+                filename = doc.metadata.get('filename', 'unknown')
+                role = doc.metadata.get('role', 'Unknown Role')
+
+                with st.expander(f"Source {i + 1} from {filename} ({role})"):
+                    content = doc.page_content
+                    # Show preview of content
+                    preview = content[:500] + "..." if len(content) > 500 else content
+                    st.write(preview)
 
 
 def render_role_tab(initialized, all_roles, vectorstore, qa_chain, get_resume_by_role, query_rag):
@@ -55,12 +119,14 @@ def render_role_tab(initialized, all_roles, vectorstore, qa_chain, get_resume_by
 
                         # Run a few preset queries about this resume
                         with st.spinner("Analyzing resume details..."):
-                            skills_result = query_rag(qa_chain,
-                                                      f"What skills does the {selected_role} have based on {filename}?")
-                            experience_result = query_rag(qa_chain,
-                                                          f"What is the work experience of the {selected_role} in {filename}?")
-                            education_result = query_rag(qa_chain,
-                                                         f"What is the education background of the {selected_role} in {filename}?")
+                            # Make queries more specific to avoid cross-contamination
+                            skills_query = f"What specific skills does the person in {filename} have? Only answer based on {filename}."
+                            experience_query = f"What is the work experience of the person in {filename}? Only answer based on {filename}."
+                            education_query = f"What is the education background of the person in {filename}? Only answer based on {filename}."
+
+                            skills_result = query_rag(qa_chain, skills_query)
+                            experience_result = query_rag(qa_chain, experience_query)
+                            education_result = query_rag(qa_chain, education_query)
 
                             col1, col2 = st.columns(2)
 
@@ -121,7 +187,7 @@ def render_modification_tab(initialized, all_roles, qa_chain, vectorstore, get_r
                             "Summary": "better position the candidate for the target role"
                         },
                         "update": {
-                            "Skills": "better represent the candidate's actual skill level and focus areas",
+                            "Skills": "better represent the candidate's skill level and focus areas",
                             "Experience": "clarify responsibilities and achievements in previous roles",
                             "Education": "provide more accurate academic information",
                             "Projects": "highlight more relevant aspects of the project work",
