@@ -3,6 +3,7 @@
 
 import streamlit as st
 import re
+from langchain.schema import Document
 
 
 def extract_person_name_from_query(query):
@@ -47,6 +48,40 @@ def filter_sources_by_context(sources, query, person_name=None):
             return filtered_sources
 
     return sources
+
+
+def query_specific_resume(qa_chain, vectorstore, query, filename):
+    """Query specific resume using metadata filtering"""
+    try:
+        # Create a custom retriever that filters by filename
+        retriever = vectorstore.as_retriever(
+            search_kwargs={
+                "filter": {"filename": filename},
+                "k": 5
+            }
+        )
+
+        # Get relevant documents for this specific file
+        relevant_docs = retriever.get_relevant_documents(query)
+
+        if not relevant_docs:
+            return {"result": f"No relevant information found in {filename} for this query.", "source_documents": []}
+
+        # Create a custom prompt context from filtered documents
+        context = "\n\n".join([doc.page_content for doc in relevant_docs])
+
+        # Create a more specific query
+        specific_query = f"Based only on the resume {filename}, {query}"
+
+        # Run the query with filtered context
+        result = qa_chain({"query": specific_query, "context": context})
+        result["source_documents"] = relevant_docs
+
+        return result
+    except Exception as e:
+        # Fallback to original method if filtering fails
+        st.warning(f"Filtering failed, using fallback method: {str(e)}")
+        return qa_chain({"query": f"From {filename} only: {query}"})
 
 
 def render_query_tab(initialized, qa_chain, query_rag):
@@ -108,8 +143,14 @@ def render_role_tab(initialized, all_roles, vectorstore, qa_chain, get_resume_by
                 if not resumes:
                     st.warning(f"No resumes found for role: {selected_role}")
                 else:
+                    st.success(f"Found {len(resumes)} resume(s) for role: {selected_role}")
+
                     for filename, info in resumes.items():
-                        st.subheader(f"Resume: {filename}")
+                        # Verify the role matches exactly
+                        if info['role'].lower() != selected_role.lower():
+                            continue  # Skip if role doesn't match exactly
+
+                        st.subheader(f"📄 Resume: {filename}")
                         st.write(f"**Role:** {info['role']}")
 
                         # Combine the content chunks and show a preview
@@ -117,29 +158,50 @@ def render_role_tab(initialized, all_roles, vectorstore, qa_chain, get_resume_by
                         with st.expander("Resume Content Preview"):
                             st.write(full_content[:1000] + "..." if len(full_content) > 1000 else full_content)
 
-                        # Run a few preset queries about this resume
-                        with st.spinner("Analyzing resume details..."):
-                            # Make queries more specific to avoid cross-contamination
-                            skills_query = f"What specific skills does the person in {filename} have? Only answer based on {filename}."
-                            experience_query = f"What is the work experience of the person in {filename}? Only answer based on {filename}."
-                            education_query = f"What is the education background of the person in {filename}? Only answer based on {filename}."
+                        # Run specific queries for this exact resume using metadata filtering
+                        with st.spinner(f"Analyzing {filename} details..."):
 
-                            skills_result = query_rag(qa_chain, skills_query)
-                            experience_result = query_rag(qa_chain, experience_query)
-                            education_result = query_rag(qa_chain, education_query)
+                            # Create more specific queries that target only this file
+                            skills_query = f"List all the technical skills, programming languages, and tools mentioned in this resume."
+                            experience_query = f"Describe the work experience and professional background mentioned in this resume."
+                            education_query = f"List the educational qualifications and degrees mentioned in this resume."
 
+                            # Use the new query_specific_resume function for better filtering
+                            try:
+                                skills_result = query_specific_resume(qa_chain, vectorstore, skills_query, filename)
+                                experience_result = query_specific_resume(qa_chain, vectorstore, experience_query,
+                                                                          filename)
+                                education_result = query_specific_resume(qa_chain, vectorstore, education_query,
+                                                                         filename)
+                            except:
+                                # Fallback to original method with more specific queries
+                                skills_result = query_rag(qa_chain,
+                                                          f"From the resume file '{filename}' ONLY, what are the technical skills? Do not include information from other resumes.")
+                                experience_result = query_rag(qa_chain,
+                                                              f"From the resume file '{filename}' ONLY, what is the work experience? Do not include information from other resumes.")
+                                education_result = query_rag(qa_chain,
+                                                             f"From the resume file '{filename}' ONLY, what is the education background? Do not include information from other resumes.")
+
+                            # Display results in columns
                             col1, col2 = st.columns(2)
 
                             with col1:
-                                st.markdown("##### Skills")
-                                st.write(skills_result["result"])
+                                st.markdown("##### 🛠️ Skills")
+                                with st.container():
+                                    st.write(skills_result["result"])
 
-                                st.markdown("##### Education")
-                                st.write(education_result["result"])
+                                st.markdown("##### 🎓 Education")
+                                with st.container():
+                                    st.write(education_result["result"])
 
                             with col2:
-                                st.markdown("##### Experience")
-                                st.write(experience_result["result"])
+                                st.markdown("##### 💼 Experience")
+                                with st.container():
+                                    st.write(experience_result["result"])
+
+                        # Add a separator between resumes
+                        st.markdown("---")
+
     else:
         st.info("Please upload and process resumes first to view roles.")
 
