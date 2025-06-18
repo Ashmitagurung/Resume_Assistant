@@ -50,6 +50,36 @@ def filter_sources_by_context(sources, query, person_name=None):
     return sources
 
 
+def normalize_role(role):
+    """Normalize role names for better matching"""
+    if not role:
+        return ""
+
+    # Convert to lowercase and remove extra spaces
+    normalized = role.lower().strip()
+
+    # Handle common variations
+    role_mappings = {
+        'project manager': ['project manager', 'pm', 'project lead', 'project coordinator'],
+        'software engineer': ['software engineer', 'software developer', 'developer'],
+        'data scientist': ['data scientist', 'data analyst', 'ml engineer', 'machine learning engineer'],
+        'frontend developer': ['frontend developer', 'front-end developer', 'react developer'],
+        'backend developer': ['backend developer', 'back-end developer'],
+        'fullstack developer': ['fullstack developer', 'full-stack developer', 'full stack developer'],
+        'devops engineer': ['devops engineer', 'devops'],
+        'qa engineer': ['qa engineer', 'quality assurance', 'software tester'],
+        'business analyst': ['business analyst', 'systems analyst'],
+        'product manager': ['product manager', 'product owner']
+    }
+
+    # Find the canonical role name
+    for canonical_role, variations in role_mappings.items():
+        if normalized in variations:
+            return canonical_role
+
+    return normalized
+
+
 def query_specific_resume(qa_chain, vectorstore, query, filename):
     """Query specific resume using metadata filtering"""
     try:
@@ -138,18 +168,37 @@ def render_role_tab(initialized, all_roles, vectorstore, qa_chain, get_resume_by
 
         if search_role_button and selected_role:
             with st.spinner(f"Retrieving resumes for role: {selected_role}"):
-                resumes = get_resume_by_role(vectorstore, selected_role)
+                # Get all resumes for the role
+                all_resumes = get_resume_by_role(vectorstore, selected_role)
 
-                if not resumes:
-                    st.warning(f"No resumes found for role: {selected_role}")
+                # Normalize the selected role for better matching
+                normalized_selected_role = normalize_role(selected_role)
+
+                # Filter resumes to only include exact role matches
+                filtered_resumes = {}
+                for filename, info in all_resumes.items():
+                    resume_role = info.get('role', '')
+                    normalized_resume_role = normalize_role(resume_role)
+
+                    # Check for exact match or close variations
+                    if (normalized_resume_role == normalized_selected_role or
+                            normalized_selected_role in normalized_resume_role or
+                            normalized_resume_role in normalized_selected_role):
+                        filtered_resumes[filename] = info
+
+                        # Debug: Print matching info (remove in production)
+                        st.write(f"Debug: Matched '{resume_role}' with '{selected_role}'")
+
+                if not filtered_resumes:
+                    st.warning(f"No resumes found exactly matching role: {selected_role}")
+                    st.info("Available roles in your dataset:")
+                    for filename, info in all_resumes.items():
+                        st.write(f"- {filename}: {info.get('role', 'Unknown')}")
                 else:
-                    st.success(f"Found {len(resumes)} resume(s) for role: {selected_role}")
+                    st.success(f"Found {len(filtered_resumes)} resume(s) for role: {selected_role}")
 
-                    for filename, info in resumes.items():
-                        # Verify the role matches exactly
-                        if info['role'].lower() != selected_role.lower():
-                            continue  # Skip if role doesn't match exactly
-
+                    # Process only the filtered resumes
+                    for filename, info in filtered_resumes.items():
                         st.subheader(f"📄 Resume: {filename}")
                         st.write(f"**Role:** {info['role']}")
 
@@ -173,7 +222,8 @@ def render_role_tab(initialized, all_roles, vectorstore, qa_chain, get_resume_by
                                                                           filename)
                                 education_result = query_specific_resume(qa_chain, vectorstore, education_query,
                                                                          filename)
-                            except:
+                            except Exception as e:
+                                st.error(f"Error querying {filename}: {str(e)}")
                                 # Fallback to original method with more specific queries
                                 skills_result = query_rag(qa_chain,
                                                           f"From the resume file '{filename}' ONLY, what are the technical skills? Do not include information from other resumes.")
